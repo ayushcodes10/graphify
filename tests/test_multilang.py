@@ -528,7 +528,7 @@ def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[usp_LoadDebtors]()"], routine
+    assert routine == ["dbo.usp_LoadDebtors()"], routine
 
 
 def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
@@ -542,7 +542,7 @@ def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
+    assert labels == ["Utils.ValidateSourceView()", "usp_Bare()"], labels
 
 
 def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
@@ -555,7 +555,7 @@ def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
     p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[a]]b]()"], routine
+    assert routine == ["dbo.a]b()"], routine
 
 
 def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
@@ -573,7 +573,7 @@ def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
     p.write_text("CREATE PROCEDURE dbo.[usp_Mixed] AS\nBEGIN\n SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["dbo.[usp_Mixed]()"], routine
+    assert routine == ["dbo.usp_Mixed()"], routine
 
 
 def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
@@ -588,7 +588,7 @@ def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[dbo].[usp_Short]()", "usp_BareShort()"], labels
+    assert labels == ["dbo.usp_Short()", "usp_BareShort()"], labels
 
 
 def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
@@ -611,7 +611,7 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     assert not any("Comment" in l for l in labels), (
         f"commented-out DDL fabricated a node: {labels}"
     )
@@ -644,8 +644,8 @@ def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "strings.sql"]
-    assert "[dbo].[usp_AfterLineString]()" in labels, labels
-    assert "[dbo].[usp_AfterBlockString]()" in labels, labels
+    assert "dbo.usp_AfterLineString()" in labels, labels
+    assert "dbo.usp_AfterBlockString()" in labels, labels
 
 
 def test_mask_sql_comments_literal_and_comment_handling():
@@ -965,7 +965,7 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     fabricated = [
         label for label in labels
         if any(k in label for k in ("Dynamic", "Nested", "Bracketed", "Unterminated"))
@@ -992,7 +992,7 @@ def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "alias.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
@@ -1011,7 +1011,7 @@ def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "bare.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
@@ -1258,6 +1258,81 @@ def test_sql_schema_qualified_alter_fk():
     for e in fk_edges:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+def test_sql_tsql_bracket_identifiers_produce_clean_labels(tmp_path):
+    """#2712: [dbo].[Alpha] must label as dbo.Alpha, not the delimiter-mangled
+    `dbo].[Alpha` tree-sitter-sql's grammar produces for bracket quoting (it has
+    no token for `[...]`, so each bracket lands as its own one-byte ERROR node,
+    one character short of the real pair)."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Alpha] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY\n"
+        ");\n"
+        "GO\n"
+        "CREATE TABLE [dbo].[Beta] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Alpha" in labels, f"got {labels}"
+    assert "dbo.Beta" in labels, f"got {labels}"
+    assert not any("]" in l or "[" in l for l in labels), (
+        f"a bracket fragment leaked into a label: {labels}"
+    )
+
+def test_sql_tsql_bracket_reference_resolves_by_clean_name(tmp_path):
+    """#2712: a bracket-quoted FOREIGN KEY ... REFERENCES [dbo].[Alpha] must
+    resolve onto the real Alpha table node, not dangle or mint a stub keyed by
+    the mangled `Alpha` text."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Alpha] ([Id] INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE TABLE [dbo].[Beta] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY,\n"
+        "    [AlphaId] INT NOT NULL,\n"
+        "    CONSTRAINT [FK_Beta_Alpha] FOREIGN KEY ([AlphaId])\n"
+        "        REFERENCES [dbo].[Alpha] ([Id])\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "dbo.Alpha" in nid and "dbo.Beta" in nid
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["dbo.Beta"], nid["dbo.Alpha"]) in refs, f"got {refs}"
+
+def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_types(tmp_path):
+    """#2712 follow-up: the bracket->backtick rewrite must not misfire on
+    Postgres/MySQL array-type syntax (`text[]`, `numeric(10)[3]`), which uses
+    `[...]` for something other than a T-SQL quoted identifier."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text("CREATE TABLE t (id INT, tags text[], scores numeric(10,2)[3]);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert any(l == "t" for l in labels), f"table extraction broke on array types: {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
+
+def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_literal(tmp_path):
+    """#2712 follow-up: an ARRAY[...] literal must not be misread as a
+    bracket-quoted identifier just because its content is not purely numeric."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE t (id INT, tags INT[] DEFAULT ARRAY[1,2,3]);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert any(l == "t" for l in labels), f"table extraction broke on ARRAY literal: {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
 
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
